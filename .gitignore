@@ -1,0 +1,5 @@
+data/*.jsonl
+!data/template.jsonl
+outputs/
+__pycache__/
+*.gguf
