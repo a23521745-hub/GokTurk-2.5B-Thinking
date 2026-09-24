@@ -29,3 +29,20 @@ Yerel R1/Qwen-72B için `--reasoner-base-url`, `--formatter-base-url` ve `--*-mo
 python train/train_unsloth.py --model unsloth/Qwen2.5-3B-Instruct-bnb-4bit --data data/*.jsonl
 ```
 Çıktılar: `outputs/gokturk-2.5b-thinking/{lora,merged_16bit,gguf}`.
+
+## GGUF derleme (GitHub Actions)
+`.github/workflows/build-gguf.yml` → **Actions → Build GGUF → Run workflow**
+- `source=hf`: HF repo id (merged 16-bit ağırlıklar; özel repo için `HF_TOKEN` secret'ı)
+- `source=release`: bu repodaki bir Release'e yüklenmiş `merged_16bit.tar.gz`
+- Ya da etiketle: `git tag gguf-v1 && git push origin gguf-v1` (repo değişkeni `GGUF_DEFAULT_HF_REPO`)
+
+llama.cpp ile F16 → Q4_K_M + Q8_0 üretir, duman testi yapar, 2 GiB'ı aşan dosyaları `llama-gguf-split` ile böler ve SHA256SUMS ile birlikte GitHub Releases'e yükler.
+
+## Arama çalıştırıcısı
+```bash
+llama-server -m GokTurk-2.5B-Thinking-Q4_K_M.gguf -c 4096 --port 8080
+python inference/search_executor.py "nginx için son kritik CVE'ler neler?" --show-trace
+python inference/search_executor.py -i --search searxng --searxng-url http://localhost:8888
+python inference/search_executor.py --search-only "python latest version"   # yalnızca arama testi
+```
+Model `</search_query>` ürettiğinde üretim durur, sorgu DuckDuckGo/SearXNG'de aranır, ilk 3 sonuç `<search_results>` olarak enjekte edilir ve model `<verify>`/`<output>` ile devam eder. Testler: `python -m unittest discover tests`.

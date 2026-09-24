@@ -23,10 +23,11 @@ SYSTEM_PROMPT = (
     "Nihai yanıtı yalnızca <output> içinde, açık ve doğru bir Türkçeyle ver."
 )
 
-_PATTERN = re.compile(
-    r"^\s*" + r"\s*".join(rf"<{t}>(?P<{t}>.*?)</{t}>" for t in TAGS) + r"\s*$",
-    re.DOTALL,
-)
+# <search_results> çıkarım sırasında arama çalıştırıcısı tarafından enjekte edilir
+# (search_query ile verify arasında, isteğe bağlı).
+_BLOCKS = [rf"<{t}>(?P<{t}>.*?)</{t}>" for t in TAGS]
+_BLOCKS[2] += r"(?:\s*<search_results>(?P<search_results>.*?)</search_results>)?"
+_PATTERN = re.compile(r"^\s*" + r"\s*".join(_BLOCKS) + r"\s*$", re.DOTALL)
 
 
 def build_response(think: str, plan: list[str] | str, verify: str, output: str,
