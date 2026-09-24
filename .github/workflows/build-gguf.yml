@@ -1,0 +1,196 @@
+# GökTürk-2.5B-Thinking — HF safetensors → GGUF (Q4_K_M, Q8_0) → GitHub Release
+#
+# Kaynak seçenekleri:
+#   source=hf       : Hugging Face repo id (ör. kullanici/GokTurk-2.5B-Thinking-merged)
+#   source=release  : Bu repodaki bir GitHub Release'e yüklenmiş model arşivi
+#                     (ör. merged_16bit.tar.gz — içinde config.json + *.safetensors)
+#
+# Gerekli secret (özel/gated HF repoları için): HF_TOKEN
+name: Build GGUF
+
+on:
+  workflow_dispatch:
+    inputs:
+      source:
+        description: "Model kaynağı"
+        type: choice
+        options: [hf, release]
+        default: hf
+      model:
+        description: "HF repo id (source=hf) VEYA release etiketi (source=release)"
+        required: true
+        default: "a23521745-hub/GokTurk-2.5B-Thinking-merged"
+      release_asset:
+        description: "source=release ise arşiv adı (tar.gz / zip)"
+        default: "merged_16bit.tar.gz"
+      quants:
+        description: "Boşlukla ayrılmış kuantizasyonlar"
+        default: "Q4_K_M Q8_0"
+      tag:
+        description: "Oluşturulacak release etiketi (boşsa otomatik)"
+        default: ""
+      llama_cpp_ref:
+        description: "llama.cpp git ref (tag/commit; tekrarlanabilirlik için sabitleyin)"
+        default: "master"
+  # Etiketle tetikleme: git tag gguf-v1 && git push origin gguf-v1
+  push:
+    tags: ["gguf-v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-gguf-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  MODEL_NAME: GokTurk-2.5B-Thinking
+  SOURCE: ${{ inputs.source || 'hf' }}
+  MODEL: ${{ inputs.model || vars.GGUF_DEFAULT_HF_REPO || 'a23521745-hub/GokTurk-2.5B-Thinking-merged' }}
+  RELEASE_ASSET: ${{ inputs.release_asset || 'merged_16bit.tar.gz' }}
+  QUANTS: ${{ inputs.quants || 'Q4_K_M Q8_0' }}
+  LLAMA_CPP_REF: ${{ inputs.llama_cpp_ref || 'master' }}
+  # GitHub Release dosya sınırı 2 GiB → daha büyük GGUF'lar parçalanır
+  SPLIT_MAX: 1900M
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Disk alanı aç (~30 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune --all --force >/dev/null 2>&1 || true
+          df -h /
+
+      - uses: actions/checkout@v4
+
+      - name: Release etiketini belirle
+        id: meta
+        run: |
+          if [ -n "${{ inputs.tag }}" ]; then TAG="${{ inputs.tag }}"
+          elif [ "${{ github.ref_type }}" = "tag" ]; then TAG="${{ github.ref_name }}"
+          else TAG="gguf-$(date -u +%Y%m%d-%H%M)-${GITHUB_SHA::7}"; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Etiket: $TAG"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: llama.cpp önbellek
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: llama.cpp
+          key: llama-cpp-${{ runner.os }}-${{ env.LLAMA_CPP_REF }}-${{ env.LLAMA_CPP_REF == 'master' && github.run_id || 'pinned' }}
+
+      - name: llama.cpp derle (CPU)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 --branch "$LLAMA_CPP_REF" https://github.com/ggml-org/llama.cpp \
+            || { git clone https://github.com/ggml-org/llama.cpp && git -C llama.cpp checkout "$LLAMA_CPP_REF"; }
+          cmake -S llama.cpp -B llama.cpp/build -DCMAKE_BUILD_TYPE=Release \
+                -DLLAMA_CURL=OFF -DGGML_NATIVE=OFF -DLLAMA_BUILD_TESTS=OFF \
+                -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF
+          cmake --build llama.cpp/build -j"$(nproc)"
+
+      - name: Python bağımlılıkları
+        run: |
+          pip install -q --upgrade pip
+          pip install -q -r llama.cpp/requirements/requirements-convert_hf_to_gguf.txt
+          pip install -q "huggingface_hub[cli]>=0.24"
+
+      - name: Modeli indir
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p model
+          if [ "$SOURCE" = "hf" ]; then
+            huggingface-cli download "$MODEL" --local-dir model \
+              --include "*.json" "*.safetensors" "*.model" "*.txt" "*.tiktoken" "merges.txt"
+          else
+            gh release download "$MODEL" --pattern "$RELEASE_ASSET" --dir /tmp/asset
+            case "$RELEASE_ASSET" in
+              *.zip) unzip -q "/tmp/asset/$RELEASE_ASSET" -d model ;;
+              *)     tar -xf "/tmp/asset/$RELEASE_ASSET" -C model ;;
+            esac
+            rm -rf /tmp/asset
+            # arşiv tek bir alt klasör içeriyorsa düzleştir
+            if [ ! -f model/config.json ]; then
+              d=$(dirname "$(find model -name config.json | head -1)"); mv "$d"/* model/
+            fi
+          fi
+          test -f model/config.json || { echo "::error::config.json bulunamadı"; exit 1; }
+          ls -lh model; df -h /
+
+      - name: HF → GGUF (F16)
+        run: |
+          mkdir -p out
+          python llama.cpp/convert_hf_to_gguf.py model --outtype f16 --outfile "out/${MODEL_NAME}-F16.gguf"
+          rm -rf model   # disk alanı
+          ls -lh out
+
+      - name: Kuantize et
+        run: |
+          for Q in $QUANTS; do
+            echo "::group::$Q"
+            ./llama.cpp/build/bin/llama-quantize "out/${MODEL_NAME}-F16.gguf" "out/${MODEL_NAME}-${Q}.gguf" "$Q"
+            echo "::endgroup::"
+          done
+          rm "out/${MODEL_NAME}-F16.gguf"
+          ls -lh out
+
+      - name: Duman testi (format etiketleri)
+        continue-on-error: true
+        run: |
+          Q=$(echo $QUANTS | awk '{print $1}')
+          # Yeni llama.cpp'de tek seferlik üretim 'llama-completion' içinde; eskilerde 'llama-cli -no-cnv'
+          BIN=./llama.cpp/build/bin/llama-completion; [ -x "$BIN" ] || BIN=./llama.cpp/build/bin/llama-cli
+          timeout 300 $BIN -m "out/${MODEL_NAME}-${Q}.gguf" -no-cnv -n 256 --temp 0.6 \
+            -p $'<|im_start|>system\nSen GökTürk-2.5B-Thinking adlı Türkçe bir yapay zekâ asistanısın. Her yanıtında sırasıyla <think>, <plan>, <search_query>, <verify> ve <output> etiketlerini kullan.<|im_end|>\n<|im_start|>user\n2x + 4 = 10 denklemini çöz.<|im_end|>\n<|im_start|>assistant\n' \
+            2>/dev/null | tee smoke.txt
+          grep -q "<think>" smoke.txt && echo "✓ <think> etiketi üretildi" || echo "::warning::<think> etiketi görülmedi"
+
+      - name: 2 GiB üstü dosyaları parçala
+        run: |
+          cd out
+          for f in *.gguf; do
+            if [ "$(stat -c%s "$f")" -gt 2000000000 ]; then
+              ../llama.cpp/build/bin/llama-gguf-split --split --split-max-size "$SPLIT_MAX" "$f" "${f%.gguf}"
+              rm "$f"
+            fi
+          done
+          sha256sum *.gguf > SHA256SUMS.txt
+          ls -lh; cat SHA256SUMS.txt
+
+      - name: GitHub Release oluştur ve yükle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          LLAMA_SHA=$(git -C llama.cpp rev-parse --short HEAD)
+          cat > notes.md <<EOF
+          ## ${MODEL_NAME} — GGUF
+
+          | | |
+          |---|---|
+          | Kaynak | \`${SOURCE}: ${MODEL}\` |
+          | Kuantizasyonlar | \`${QUANTS}\` |
+          | llama.cpp | \`${LLAMA_SHA}\` |
+
+          **Kullanım**
+          \`\`\`bash
+          llama-server -m ${MODEL_NAME}-Q4_K_M.gguf -c 4096 --host 0.0.0.0 --port 8080
+          python inference/search_executor.py --server http://localhost:8080 "Soru"
+          \`\`\`
+          Parçalı dosyalarda (\`-00001-of-0000N.gguf\`) yalnızca ilk parçayı verin; llama.cpp diğerlerini otomatik yükler.
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" out/* --clobber
+          else
+            gh release create "$TAG" out/* --title "${MODEL_NAME} GGUF ${TAG}" --notes-file notes.md
+          fi
