@@ -46,3 +46,8 @@ python inference/search_executor.py -i --search searxng --searxng-url http://loc
 python inference/search_executor.py --search-only "python latest version"   # yalnızca arama testi
 ```
 Model `</search_query>` ürettiğinde üretim durur, sorgu DuckDuckGo/SearXNG'de aranır, ilk 3 sonuç `<search_results>` olarak enjekte edilir ve model `<verify>`/`<output>` ile devam eder. Testler: `python -m unittest discover tests`.
+
+## Eğitim (Kaggle T4)
+`train/kaggle/GokTurk_Kaggle_T4.ipynb` (veya `gokturk_kaggle_t4.py`) → Kaggle'a yükleyin:
+GPU T4 · Internet On · Secrets'a `HF_TOKEN` → **Save Version → Save & Run All**.
+Eğitim → Q4_K_M GGUF → `<kullanıcı>/GokTurk-2.5B-Thinking-GGUF` HF deposuna otomatik yükleme.
