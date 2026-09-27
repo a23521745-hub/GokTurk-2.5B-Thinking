@@ -39,7 +39,8 @@ from typing import Any
 # ---------------------------------------------------------------------------
 # Sabitler
 # ---------------------------------------------------------------------------
-MODEL_NAME = "GökTürk-2.5B-Thinking"
+MODEL_NAME = "GökTürk2.5-3B-Thinking"
+HF_SLUG = "GokTurk2.5-3B-Thinking"          # HF depo adlarında Türkçe karakter kullanılamaz
 
 STEPS: list[tuple[int, str]] = [
     (1, "Problem Sentezleme & Ayrıştırma"),
@@ -54,6 +55,8 @@ STEP_HEADERS = {i: f"[STEP {i}: {name}]" for i, name in STEPS}
 THOUGHT_OPEN, THOUGHT_CLOSE = "<thought>", "</thought>"
 IM_START, IM_END = "<|im_start|>", "<|im_end|>"
 NEED_SEARCH, NO_SEARCH = "Dış kaynak: GEREKLİ", "Dış kaynak: GEREKSİZ"
+# STEP 6'nın son satırı: nihai yanıtın kilitlendiği doğrulanmış sonuç (tutarlılık denetimi için)
+VERIFIED_PREFIX = "Doğrulanan sonuç:"
 
 TAVILY_TOOL: dict[str, Any] = {
     "type": "function",
@@ -80,8 +83,9 @@ Her yanıttan önce <thought> içinde sırasıyla 6 adımı uygula:
 [STEP 3] gerekiyorsa en iyi arama sorgusunu kur ve tavily_search aracını çağır;
 [STEP 4] araç sonuçlarını güvenilirlik ve tutarlılık açısından süz, çelişkileri ele;
 [STEP 5] yanıtı yapılandır;
-[STEP 6] mantık, dil ve eksiklik denetimi yap.
-</thought> sonrasında nihai yanıtı açık Türkçe ile ver; web kaynaklarını [1], [2] diye an.
+[STEP 6] mantık, dil ve eksiklik denetimi yap; son satıra "{VERIFIED_PREFIX} ..." yaz.
+</thought> sonrasında nihai yanıtı açık Türkçe ile ver. Nihai yanıt, doğrulanan sonuçla BİREBİR aynı olmalı;
+düşüncede bulduğun sonucu değiştirme. Web kaynaklarını [1], [2] diye an.
 
 # Araçlar
 <tools>
@@ -222,6 +226,11 @@ def validate_text(text: str) -> tuple[bool, str]:
             return False, "araç çağrısı JSON'u bozuk"
     if "<tool_call>" in answer:
         return False, "nihai yanıtta araç çağrısı var"
+    if VERIFIED_PREFIX not in steps.get(6, ""):
+        return False, f"STEP 6'da '{VERIFIED_PREFIX}' satırı yok"
+    ok, why = answer_consistent(thought, answer)
+    if not ok:
+        return False, f"düşünce/yanıt tutarsız ({why})"
     return True, "ok"
 
 
@@ -263,3 +272,43 @@ CHAT_TEMPLATE = (
     "{%- endfor -%}"
     "{%- if add_generation_prompt -%}{{- '<|im_start|>assistant\\n' -}}{%- endif -%}"
 )
+
+
+# ---------------------------------------------------------------------------
+# Düşünce ↔ yanıt tutarlılığı
+# ---------------------------------------------------------------------------
+_NUM_RE = re.compile(r"-?\d+(?:[.,]\d+)?(?:/\d+)?")
+
+
+def _norm_num(x: str) -> str:
+    x = x.replace(",", ".")
+    try:
+        if "/" in x:
+            a, b = x.split("/")
+            f = float(a) / float(b)
+        else:
+            f = float(x)
+        return str(int(f)) if f.is_integer() else f"{f:.4f}".rstrip("0").rstrip(".")
+    except (ValueError, ZeroDivisionError):
+        return x
+
+
+def verified_result(thought: str) -> str | None:
+    """STEP 6'daki 'Doğrulanan sonuç:' satırını döndürür."""
+    idx = thought.rfind(VERIFIED_PREFIX)
+    if idx < 0:
+        return None
+    return thought[idx + len(VERIFIED_PREFIX):].strip().splitlines()[0].strip() or None
+
+
+def answer_consistent(thought: str, answer: str) -> tuple[bool, str]:
+    """Doğrulanan sonuçtaki sayılar nihai yanıtta geçiyor mu? (sayı yoksa denetim atlanır)."""
+    v = verified_result(thought)
+    if not v:
+        return True, "doğrulanan sonuç satırı yok"
+    need = {_norm_num(n) for n in _NUM_RE.findall(v.replace("\u202f", ""))}
+    if not need:
+        return True, "sayısal sonuç yok"
+    have = {_norm_num(n) for n in _NUM_RE.findall(answer.replace("\u202f", ""))}
+    missing = need - have
+    return (not missing), ("ok" if not missing else f"yanıtta eksik: {sorted(missing)}")

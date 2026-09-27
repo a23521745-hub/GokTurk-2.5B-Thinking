@@ -1,0 +1,11 @@
+# Bilinen çakışmaları kilitler (pip ile birlikte çözülebildiği doğrulandı, 2026-09-27).
+#  - unsloth-zoo → datasets<4.4.0 ister (datasets 5.x Unsloth'u BOZAR)
+#  - transformers 4.x → huggingface_hub<1.0 ister
+# Güncellemek için: pip install --dry-run --report r.json -r requirements-train.txt
+unsloth==2026.9.11
+unsloth_zoo==2026.9.7
+datasets==4.3.0
+huggingface_hub==0.36.2
+transformers==4.57.6
+trl==0.24.0
+peft==0.21.0

@@ -1,4 +1,4 @@
-# 🐺 GökTürk-2.5B-Thinking
+# 🐺 GökTürk2.5-3B-Thinking
 Hafif, yerelde çalışan (≤ 2.5 GB RAM, Q4_K_M), **6 aşamalı hibrit Chain-of-Thought** ve **Tavily tool calling / RAG** yeteneğine sahip Türkçe LLM.
 
 | | |
@@ -35,7 +35,9 @@ Araç çağrısı Qwen2.5'in yerel `<tool_call>` biçimidir. Biçimin tek kayna�
 | `train_unsloth.py` | Unsloth QLoRA eğitimi (Kaggle/Colab/yerel otomatik algılama) |
 | `push_to_hf.py` | LoRA → merged 16-bit (CPU) → GGUF Q4_K_M/Q8_0 (llama.cpp) → RAM tablosu → Hugging Face |
 | `tavily_rag_handler.py` | Tavily istemcisi, sonuç temizleme ve süzme, ajan döngüsü, CLI |
-| `gokturk_env.py` | Kaggle/Colab secrets, dizinler, GPU ortam değişkenleri |
+| `gokturk_env.py` | Kaggle/Colab secrets, GPU kontrolü, sürüm kilitli kurulum, yeniden deneme (retry/backoff) |
+| `requirements-train.txt` + `constraints.txt` | Eğitim bağımlılıkları; `datasets<4.4.0` (unsloth-zoo), `huggingface_hub<1.0` kilitli |
+| `requirements.txt` | Veri hazırlama / RAG istemcisi (GPU gerekmez) |
 | `notebooks/GokTurk6_Kaggle_T4.ipynb` | Kaggle'da uçtan uca çalışan notebook |
 
 ## Hızlı başlangıç
@@ -48,20 +50,26 @@ export GEMINI_API_KEY=... TAVILY_API_KEY=tvly-...
 python prepare_dataset.py distill --seeds data/seeds.jsonl --topics 600 -o data/distill6.jsonl
 python prepare_dataset.py merge data/synth6.jsonl data/distill6.jsonl -o data/gokturk6
 
-# 2) Eğitim (T4)
-python train_unsloth.py --size 3b --epochs 2
+# 2) Eğitim (T4) — LoRA eğitim biter bitmez HF'e yüklenir
+pip install -r requirements-train.txt -c constraints.txt
+export HF_TOKEN=hf_...  HF_REPO=kullanici/GokTurk2.5-3B-Thinking   # HF_REPO isteğe bağlı
+python train_unsloth.py --size 3b --epochs 2 --push-lora
 
-# 3) GGUF + Hugging Face
-export HF_TOKEN=hf_...
+# 3) Merge (CPU) → GGUF → Hugging Face (başarısız olursa yalnızca bu adımı tekrarlayın)
 python push_to_hf.py --quants q4_k_m q8_0 --push
 
 # 4) Yerelde çalıştırma + Tavily RAG
-llama-server -m outputs/gokturk-2.5b-thinking/gguf/GokTurk-2.5B-Thinking-Q4_K_M.gguf -c 4096 -ctk q8_0 -ctv q8_0 -fa on --port 8080
+llama-server -m outputs/gokturk/gguf/GokTurk2.5-3B-Thinking-Q4_K_M.gguf -c 4096 -ctk q8_0 -ctv q8_0 -fa on --port 8080
 python tavily_rag_handler.py "OpenSSH için son kritik CVE hangisi?" --show-thought
 ```
 
+Hugging Face'te oluşan depolar: `<kullanıcı>/GokTurk2.5-3B-Thinking` (merged 16-bit) · `…-GGUF` (Q4_K_M, Q8_0) · `…-LoRA`.
+
+### Düşünce ↔ yanıt tutarlılığı
+STEP 6 her zaman `Doğrulanan sonuç: …` satırıyla biter. Nihai yanıt bu sonuçla çelişen örnekler eğitim verisinden atılır. Çıkarımda `tavily_rag_handler.py` tutarsızlık görürse düşünceyi aynen tutar ve yalnızca nihai yanıtı temperature=0 ile yeniden üretir.
+
 ### Kaggle
-`notebooks/GokTurk6_Kaggle_T4.ipynb` dosyasını yükleyin. **GPU T4 · Internet On · Secrets: `HF_TOKEN`** (isteğe bağlı: `GEMINI_API_KEY`, `TAVILY_API_KEY`). Ardından **Save Version → Save & Run All**.
+`notebooks/GokTurk6_Kaggle_T4.ipynb` dosyasını yükleyin. **Accelerator mutlaka `GPU T4 x2` olmalı.** CPU seçiliyse notebook ilk hücrede durup uyarır. **GPU T4 · Internet On · Secrets: `HF_TOKEN`** (isteğe bağlı: `GEMINI_API_KEY`, `TAVILY_API_KEY`). Ardından **Save Version → Save & Run All**.
 Kendi verinizi kullanmak için `train.jsonl`/`val.jsonl` dosyalarını Kaggle Dataset olarak ekleyin; notebook bunları otomatik bulur.
 
 ### PocketPal AI / LM Studio
@@ -69,5 +77,5 @@ GGUF'a GökTürk sohbet şablonu gömülüdür. Sistem promptu boş bırakılır
 
 ### Diğer
 - `.github/workflows/build-gguf.yml`: Hugging Face'teki merged modelden CI ile GGUF üretir ve GitHub Release'e yükler.
-- `inference/search_executor.py`, `scripts/`, `train/`: önceki **5 aşamalı** (`<think>…<output>`) sürüm (legacy).
+- `inference/search_executor.py` (DuckDuckGo/SearXNG yedeği) ve `scripts/` (sentetik üreticiler) önceki sürümden kalma yardımcılardır.
 - Testler: `python -m unittest discover tests`

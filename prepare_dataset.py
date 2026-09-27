@@ -41,8 +41,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path[:0] = [str(ROOT), str(ROOT / "scripts"), str(ROOT / "inference")]
-from gokturk_cot import (NEED_SEARCH, NO_SEARCH, SYSTEM_PROMPT, build_messages,  # noqa: E402
-                         render_chatml, validate_messages)
+from gokturk_cot import (NEED_SEARCH, NO_SEARCH, SYSTEM_PROMPT, VERIFIED_PREFIX,  # noqa: E402
+                         build_messages, render_chatml, validate_messages)
 
 
 def write_jsonl(records, path: Path, mode="w"):
@@ -75,6 +75,16 @@ CATEGORY_HINTS = {
 }
 
 
+def _verified_line(output: str) -> str:
+    """Nihai yanıttan kısa 'Doğrulanan sonuç' özeti çıkarır (yanıtla birebir tutarlı)."""
+    text = re.sub(r"```.*?```", " ", output, flags=re.DOTALL)
+    bold = [b.strip() for b in re.findall(r"\*\*(.+?)\*\*", text) if not b.strip().endswith(":")]
+    if bold:
+        return f"{VERIFIED_PREFIX} " + "; ".join(bold[:3])
+    first = re.split(r"(?<=[.!?])\s", re.sub(r"[*`#]", "", text).strip())[0]
+    return f"{VERIFIED_PREFIX} " + first[:200]
+
+
 def _synthetic_one(q: str, p: dict, cat: str, rng: random.Random):
     area, fmt = CATEGORY_HINTS[cat]
     if p["search_query"].strip().upper() != "YOK":
@@ -90,7 +100,8 @@ def _synthetic_one(q: str, p: dict, cat: str, rng: random.Random):
             3: "Arama yapılmayacak; içsel bilgi ve hesaplama yeterli.",
             4: "Dış kaynak kullanılmadı. Kullandığım kurallar/formüller standart ve iç tutarlılıkları kontrol edildi.",
             5: p["plan"],
-            6: f"{p['verify']}\nDil ve biçim kontrolü: yanıt Türkçe, eksiksiz ve istenen formatta.",
+            6: f"{p['verify']}\nDil ve biçim kontrolü: yanıt Türkçe, eksiksiz ve istenen formatta.\n"
+               + _verified_line(p["output"]),
         }
         return build_messages(q, steps, p["output"]), False
     # Arama gerektiren: araç hata/boş döndürür → model dürüstçe sınırı belirtmeyi öğrenir
@@ -109,7 +120,8 @@ def _synthetic_one(q: str, p: dict, cat: str, rng: random.Random):
            "Yalnızca zamandan bağımsız, her durumda geçerli önerileri verebilirim.",
         5: "1. Güncel veriyi doğrulayamadığımı açıkça belirt.\n2. Kullanıcının kendisinin kontrol "
            "edebileceği resmi kaynakları ve komutları ver.\n3. Genel güvenlik önerilerini ekle.",
-        6: "Yanıtta doğrulanmamış hiçbir sayı, sürüm veya tarih yok; öneriler genel geçer. Dil ve biçim uygun.",
+        6: "Yanıtta doğrulanmamış hiçbir sayı, sürüm veya tarih yok; öneriler genel geçer. Dil ve biçim uygun.\n"
+           f"{VERIFIED_PREFIX} güncel bilgi doğrulanamadı; tahmini sürüm/CVE verilmeyecek.",
     }
     answer = (f"Şu anda {subject} hakkında **güncel bilgiyi doğrulayamadım** (arama sonuç vermedi), "
               "bu yüzden tahmini sürüm veya CVE numarası vermiyorum.\n\n"
@@ -279,8 +291,10 @@ step2 İçsel Akıl Yürütme: kendi bilginle çözüm fikri/çekirdek akıl yü
 step3 Web Araştırması & Kaynak Toplama: {step3_rule}
 step4 Kaynak Doğrulama & Yerelde İşleme: {step4_rule}
 step5 Yanıt Planlama & Sunum Hazırlığı: numaralı plan
-step6 Öz-Denetim & Eksiklik Giderme: sonucu bağımsız yoldan sağla, hataları düzelt, dil/biçim kontrolü
-answer: kullanıcıya nihai yanıt (markdown; kod gerekiyorsa kod bloğu). {answer_rule}
+step6 Öz-Denetim & Eksiklik Giderme: sonucu bağımsız yoldan sağla, hataları düzelt, dil/biçim kontrolü;
+      SON SATIR tam olarak "{verified} <kısa nihai sonuç>" olmalı
+answer: kullanıcıya nihai yanıt (markdown; kod gerekiyorsa kod bloğu). Yanıttaki sonuç, step6'daki
+      doğrulanan sonuçla BİREBİR aynı olmalı (aynı sayılar/birimler). {answer_rule}
 
 Kurallar: Düşünce adımları öz olsun (toplam ~150-450 kelime). Uydurma bilgi, sürüm, tarih YOK.
 {ref_rule}
@@ -351,7 +365,7 @@ def distill_one(item: dict, teacher: Teacher, search, a, rng: random.Random):
         call = {"name": "tavily_search", "arguments": args}
     # (b) 6 adımlı üretim
     prompt = GEN_PROMPT.format(
-        q=q, marker=NEED_SEARCH if needs else NO_SEARCH,
+        q=q, marker=NEED_SEARCH if needs else NO_SEARCH, verified=VERIFIED_PREFIX,
         step3_rule=(f'neden aranması gerektiğini ve kurulan sorguyu ("{call["arguments"]["query"]}") anlat'
                     if needs else "aramanın neden gereksiz olduğunu tek cümleyle belirt"),
         step4_rule=("ARAÇ SONUÇLARINI süz: hangi kaynak güvenilir, hangisi eski/çelişkili; yalnızca "

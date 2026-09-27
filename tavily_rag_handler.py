@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""GökTürk-2.5B-Thinking — Tavily API & Tool Calling / RAG katmanı.
+"""GökTürk2.5-3B-Thinking — Tavily API & Tool Calling / RAG katmanı.
 
 STEP 3'te model `<tool_call>{"name": "tavily_search", ...}</tool_call>` üretir →
 bu katman çağrıyı yakalar, Tavily'ye gönderir, dönen JSON'u temizler/süzer/kısaltır ve
@@ -8,7 +8,7 @@ devam eder ve atıflı nihai yanıtı yazar.
 
 Kullanım:
     export TAVILY_API_KEY=tvly-...
-    llama-server -m GokTurk-2.5B-Thinking-Q4_K_M.gguf -c 4096 -t 4 --port 8080
+    llama-server -m GokTurk2.5-3B-Thinking-Q4_K_M.gguf -c 4096 -t 4 --port 8080
     python tavily_rag_handler.py "OpenSSH için son kritik CVE hangisi?" --show-thought
     python tavily_rag_handler.py -i                        # sohbet modu
     python tavily_rag_handler.py --gguf model.gguf "..."   # sunucusuz (llama-cpp-python)
@@ -34,8 +34,8 @@ from typing import Callable, Protocol
 
 ROOT = Path(__file__).resolve().parent
 sys.path[:0] = [str(ROOT), str(ROOT / "inference")]
-from gokturk_cot import (IM_END, SYSTEM_PROMPT, parse_tool_call,  # noqa: E402
-                         render_chatml, split_response)
+from gokturk_cot import (IM_END, SYSTEM_PROMPT, THOUGHT_CLOSE, answer_consistent,  # noqa: E402
+                         parse_tool_call, render_chatml, split_response)
 
 TAVILY_URL = "https://api.tavily.com/search"
 
@@ -206,7 +206,8 @@ def default_provider(k: int = 3) -> SearchProvider:
 # Model arka uçları
 # ---------------------------------------------------------------------------
 class LLM(Protocol):
-    def complete(self, prompt: str, stop: list[str], max_tokens: int) -> str: ...
+    def complete(self, prompt: str, stop: list[str], max_tokens: int,
+                 temperature: float | None = None) -> str: ...
 
 
 class OpenAICompletionsLLM:
@@ -219,9 +220,10 @@ class OpenAICompletionsLLM:
         self.model, self.temperature, self.top_p = model, temperature, top_p
         self.api_key, self.timeout = api_key, timeout
 
-    def complete(self, prompt: str, stop: list[str], max_tokens: int) -> str:
+    def complete(self, prompt: str, stop: list[str], max_tokens: int, temperature: float | None = None) -> str:
+        t = self.temperature if temperature is None else temperature
         body = json.dumps({"model": self.model, "prompt": prompt, "stop": stop, "max_tokens": max_tokens,
-                           "temperature": self.temperature, "top_p": self.top_p,
+                           "temperature": t, "top_p": self.top_p if t > 0 else 1.0,
                            "repeat_penalty": 1.05, "cache_prompt": True}).encode()
         req = urllib.request.Request(self.url, data=body, headers={
             "Content-Type": "application/json", "Authorization": f"Bearer {self.api_key}"})
@@ -239,8 +241,9 @@ class LlamaCppPythonLLM:
                          use_mmap=True, verbose=False)
         self.temperature, self.top_p = temperature, top_p
 
-    def complete(self, prompt: str, stop: list[str], max_tokens: int) -> str:
-        return self.llm(prompt, stop=stop, max_tokens=max_tokens, temperature=self.temperature,
+    def complete(self, prompt: str, stop: list[str], max_tokens: int, temperature: float | None = None) -> str:
+        t = self.temperature if temperature is None else temperature
+        return self.llm(prompt, stop=stop, max_tokens=max_tokens, temperature=t,
                         top_p=self.top_p, repeat_penalty=1.05)["choices"][0]["text"]
 
 
@@ -254,14 +257,17 @@ class AgentResult:
     transcript: str                         # tam asistan metni (araç turları dahil)
     tool_calls: list[dict] = field(default_factory=list)
     sources: list[Source] = field(default_factory=list)
+    consistent: bool = True                 # nihai yanıt STEP 6'daki doğrulanan sonuçla tutarlı mı
+    repaired: bool = False                  # yanıt tutarlılık için yeniden üretildi mi
 
 
 class GokturkRAGAgent:
     def __init__(self, llm: LLM, search: SearchProvider | None = None, max_tool_calls: int = 2,
-                 max_tokens: int = 1536, system_prompt: str = SYSTEM_PROMPT,
+                 max_tokens: int = 1536, answer_tokens: int = 768, system_prompt: str = SYSTEM_PROMPT,
                  on_event: Callable[[str, str], None] | None = None):
         self.llm, self.search = llm, search or default_provider()
         self.max_tool_calls, self.max_tokens, self.system_prompt = max_tool_calls, max_tokens, system_prompt
+        self.answer_tokens = answer_tokens
         self.on_event = on_event or (lambda kind, text: None)
 
     def run(self, user: str, history: list[dict] | None = None) -> AgentResult:
@@ -300,8 +306,23 @@ class GokturkRAGAgent:
                          {"role": "tool", "content": resp}]
             transcript += head + f"\n<tool_call>{json.dumps(call, ensure_ascii=False)}</tool_call>\n" \
                                  f"<tool_response>{resp}</tool_response>\n"
+        # --- Son işlem: düşünce ↔ yanıt tutarlılığı ---------------------------------
+        last = messages.pop()["content"]                      # son asistan parçası
+        thought_part = last.split(THOUGHT_CLOSE)[0].rstrip()
         thought, answer = split_response(transcript)
-        return AgentResult(answer or transcript.strip(), thought, transcript, calls, sources)
+        ok, _ = answer_consistent(thought, answer) if answer else (False, "yanıt yok")
+        repaired = False
+        if not ok:
+            # Düşünceyi SABİT tutup yalnızca nihai yanıtı açgözlü (temperature=0) yeniden üret
+            prefix = render_chatml(messages, add_generation_prompt=True) + thought_part + f"\n{THOUGHT_CLOSE}\n\n"
+            new_answer = self.llm.complete(prefix, stop=[IM_END, "<|endoftext|>", "<tool_call>"],
+                                           max_tokens=self.answer_tokens, temperature=0.0).strip()
+            self.on_event("repair", new_answer)
+            if new_answer:
+                ok = answer_consistent(thought, new_answer)[0]
+                transcript = transcript.split(THOUGHT_CLOSE)[0].rstrip() + f"\n{THOUGHT_CLOSE}\n\n" + new_answer
+                answer, repaired = new_answer, True
+        return AgentResult(answer or transcript.strip(), thought, transcript, calls, sources, ok, repaired)
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +368,12 @@ def main():
                               "sources": [s.__dict__ for s in res.sources]}, ensure_ascii=False, indent=2))
         else:
             print(f"\n{res.answer}\n")
+            if res.repaired:
+                print("ℹ️  Yanıt, düşüncedeki doğrulanan sonuçla tutarlı olacak şekilde yeniden üretildi.",
+                      file=sys.stderr)
+            if not res.consistent:
+                print("⚠️  Nihai yanıt doğrulanan sonuçla tutarsız olabilir; düşünceyi kontrol edin "
+                      "(--show-thought).", file=sys.stderr)
             for s in res.sources:
                 print(f"  [{s.id}] {s.title} — {s.url}")
         # bağlamı küçük tutmak için geçmişte yalnızca nihai yanıt saklanır

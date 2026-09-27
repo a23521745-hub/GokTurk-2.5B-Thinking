@@ -1,0 +1,9 @@
+# GökTürk — Veri hazırlama, RAG istemcisi ve yerel çıkarım (GPU gerekmez)
+#   pip install -r requirements.txt -c constraints.txt
+datasets>=3.4.1,<4.4.0      # prepare_dataset.py seeds
+huggingface_hub>=0.34.0,<1.0
+openai>=1.40                # prepare_dataset.py distill (Gemini/OpenAI uyumlu öğretmen)
+jinja2>=3.1                 # sohbet şablonu testi
+# İsteğe bağlı:
+# llama-cpp-python          # tavily_rag_handler.py --gguf (sunucusuz çıkarım)
+# ddgs                      # DuckDuckGo yedeği için daha sağlam istemci

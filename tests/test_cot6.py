@@ -14,15 +14,16 @@ from gokturk_cot import (CHAT_TEMPLATE, STEP_HEADERS, build_messages, parse_tool
 from tavily_rag_handler import GokturkRAGAgent, Source, clean_tavily_response, to_tool_response  # noqa: E402
 
 STEPS = {i: f"adım {i} içeriği" for i in range(1, 7)}
+STEPS[6] = "kontrol tamam\nDoğrulanan sonuç: 42"
 CALL = {"name": "tavily_search", "arguments": {"query": "openssh cve"}}
 
 
 class TestFormat(unittest.TestCase):
     def test_valid_no_tool(self):
-        self.assertEqual(validate_messages(build_messages("Soru", STEPS, "Yanıt metni")), (True, "ok"))
+        self.assertEqual(validate_messages(build_messages("Soru", STEPS, "Yanıt metni 42")), (True, "ok"))
 
     def test_valid_tool(self):
-        m = build_messages("Soru", STEPS, "Yanıt [1]", CALL, '{"results": []}')
+        m = build_messages("Soru", STEPS, "Yanıt 42 [1]", CALL, '{"results": []}')
         self.assertEqual([x["role"] for x in m], ["system", "user", "assistant", "tool", "assistant"])
         self.assertTrue(validate_messages(m)[0])
 
@@ -45,7 +46,7 @@ class TestFormat(unittest.TestCase):
         except ImportError:
             self.skipTest("jinja2 yok")
         t = jinja2.Environment().from_string(CHAT_TEMPLATE)
-        m = build_messages("Soru", STEPS, "Yanıt", CALL, "{}")
+        m = build_messages("Soru", STEPS, "Yanıt 42", CALL, "{}")
         self.assertEqual(t.render(messages=m), render_chatml(m))
         # sistem mesajı yoksa varsayılan eklenir (PocketPal)
         self.assertEqual(t.render(messages=m[1:2], add_generation_prompt=True),
@@ -82,17 +83,21 @@ class TestTavilyClean(unittest.TestCase):
 
 
 class FakeLLM:
-    def __init__(self):
-        self.calls = 0
+    def __init__(self, good=True):
+        self.calls, self.good, self.greedy_prompts = 0, good, []
 
-    def complete(self, prompt, stop, max_tokens):
+    def complete(self, prompt, stop, max_tokens, temperature=None):
         self.calls += 1
+        if prompt.endswith("</thought>\n\n"):          # tutarlılık için yeniden üretim
+            self.greedy_prompts.append(temperature)
+            return "Düzeltilmiş sonuç 7 [1]."
         if "<tool_response>" not in prompt:
             text = ("<thought>\n" + "".join(f"{STEP_HEADERS[i]}\nadım {i}\n" for i in (1, 2, 3)) +
                     '<tool_call>\n{"name": "tavily_search", "arguments": {"query": "openssh cve"}}\n</tool_call>')
         else:
             assert '"openssh cve"' in prompt and "<|im_start|>user\n<tool_response>" in prompt
-            text = "".join(f"{STEP_HEADERS[i]}\nadım {i}\n" for i in (4, 5, 6)) + "</thought>\n\nSonuç [1]."
+            text = ("".join(f"{STEP_HEADERS[i]}\nadım {i}\n" for i in (4, 5, 6)) +
+                    "Doğrulanan sonuç: 7\n</thought>\n\n" + ("Sonuç 7 [1]." if self.good else "Sonuç 9 [1]."))
         for s in stop:
             if s in text:
                 return text[: text.index(s)]
@@ -110,9 +115,29 @@ class TestAgent(unittest.TestCase):
 
         res = GokturkRAGAgent(FakeLLM(), provider).run("OpenSSH CVE?")
         self.assertEqual(seen, [{"query": "openssh cve"}])
-        self.assertEqual(res.answer, "Sonuç [1].")
+        self.assertEqual(res.answer, "Sonuç 7 [1].")
+        self.assertTrue(res.consistent)
         self.assertEqual(len(res.sources), 1)
         self.assertTrue(validate_text(res.transcript)[0], res.transcript)
+
+
+    def test_inconsistent_answer_is_regenerated(self):
+        llm = FakeLLM(good=False)
+        provider = lambda a: (to_tool_response(a["query"], []), [])  # noqa: E731
+        res = GokturkRAGAgent(llm, provider).run("?")
+        self.assertEqual(llm.greedy_prompts, [0.0])
+        self.assertEqual(res.answer, "Düzeltilmiş sonuç 7 [1].")
+        self.assertTrue(res.consistent)
+
+
+class TestConsistency(unittest.TestCase):
+    def test_rules(self):
+        from gokturk_cot import answer_consistent
+        self.assertTrue(answer_consistent("Doğrulanan sonuç: x = 6", "**x = 6**")[0])
+        self.assertFalse(answer_consistent("Doğrulanan sonuç: 20 gün", "18 gün")[0])
+        self.assertTrue(answer_consistent("Doğrulanan sonuç: %12,5", "%12.5")[0])
+        bad = build_messages("S", STEPS, "Yanıt 41")
+        self.assertIn("tutarsız", validate_messages(bad)[1])
 
 
 class TestPipeline(unittest.TestCase):
@@ -122,7 +147,8 @@ class TestPipeline(unittest.TestCase):
                                    "-o", f"{d}/s.jsonl"], stdout=subprocess.DEVNULL)
             subprocess.check_call([sys.executable, str(ROOT / "prepare_dataset.py"), "merge", f"{d}/s.jsonl",
                                    "-o", f"{d}/m"], stdout=subprocess.DEVNULL)
-            rows = [json.loads(x) for x in open(f"{d}/m/train.jsonl")]
+            with open(f"{d}/m/train.jsonl", encoding="utf-8") as fh:
+                rows = [json.loads(x) for x in fh]
             self.assertGreater(len(rows), 100)
             self.assertTrue(all(validate_messages(r["messages"])[0] for r in rows))
 

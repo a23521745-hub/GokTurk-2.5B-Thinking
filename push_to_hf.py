@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""GökTürk-2.5B-Thinking — LoRA → merged 16-bit → GGUF (Q4_K_M / Q8_0) → Hugging Face.
+"""GökTürk2.5-3B-Thinking — LoRA → merged 16-bit → GGUF (Q4_K_M / Q8_0) → Hugging Face.
 
-    python push_to_hf.py --lora outputs/gokturk-2.5b-thinking/lora_adapter --quants q4_k_m q8_0 --push
+    python push_to_hf.py --quants q4_k_m q8_0 --push                 # varsayılan LoRA yolu
+    python push_to_hf.py --lora-repo kullanici/GokTurk2.5-3B-Thinking-LoRA --push   # HF'teki LoRA'dan
 
 Adımlar:
   1. Merge   : LoRA + taban model → 16-bit safetensors
@@ -10,7 +11,8 @@ Adımlar:
   2. GGUF    : llama.cpp convert_hf_to_gguf.py → F16 → llama-quantize (Q4_K_M, Q8_0)
                (--gguf-backend unsloth ile model.save_pretrained_gguf kullanılabilir)
   3. RAM     : her dosya için bağlam uzunluğuna göre tahmini RAM tablosu (2.5 GB hedefi)
-  4. Push    : <kullanıcı>/GokTurk-2.5B-Thinking (merged) ve <...>-GGUF (GGUF dosyaları) depoları
+  4. Push    : <kullanıcı>/GokTurk2.5-3B-Thinking (merged 16-bit) ve <...>-GGUF depoları
+               (tüm indirme/yüklemeler üstel geri çekilmeli yeniden denemeli)
 
 GGUF'a GökTürk sohbet şablonu gömülür: sistem mesajı verilmezse 6 adımlı CoT sistem promptu
 otomatik eklenir → PocketPal AI / LM Studio / llama.cpp'de ek ayar gerekmez.
@@ -30,9 +32,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 import gokturk_env  # noqa: E402
-from gokturk_cot import CHAT_TEMPLATE, MODEL_NAME, SYSTEM_PROMPT  # noqa: E402
+from gokturk_cot import CHAT_TEMPLATE, HF_SLUG, MODEL_NAME, SYSTEM_PROMPT  # noqa: E402
+from gokturk_env import retry  # noqa: E402
 
-SLUG = "GokTurk-2.5B-Thinking"   # HF depo adlarında Türkçe karakter kullanılamaz
+SLUG = HF_SLUG
 RAM_BUDGET_GB = 2.5
 
 
@@ -65,8 +68,9 @@ def merge_peft(lora_dir: Path, out_dir: Path, base: str | None = None) -> Path:
     from transformers import AutoModelForCausalLM, AutoTokenizer
     base = base or resolve_base(lora_dir)
     print(f"🔗 PEFT merge (CPU): {base} + {lora_dir}")
-    model = AutoModelForCausalLM.from_pretrained(base, torch_dtype=torch.float16, device_map="cpu",
-                                                 low_cpu_mem_usage=True, token=os.environ.get("HF_TOKEN"))
+    local = gokturk_env.prefetch_model(base)          # yeniden denemeli, kaldığı yerden devam eden indirme
+    model = AutoModelForCausalLM.from_pretrained(local, torch_dtype=torch.float16, device_map="cpu",
+                                                 low_cpu_mem_usage=True)
     model = PeftModel.from_pretrained(model, str(lora_dir)).merge_and_unload()
     out_dir.mkdir(parents=True, exist_ok=True)
     model.save_pretrained(str(out_dir), safe_serialization=True, max_shard_size="2GB")
@@ -89,11 +93,13 @@ def ensure_llamacpp(dir_: Path, ref: str = "master") -> Path:
     quant = dir_ / "build/bin/llama-quantize"
     if quant.exists():
         return dir_
-    if not dir_.exists():
-        run(["git", "clone", "--depth", "1", "--branch", ref, "https://github.com/ggml-org/llama.cpp", dir_])
+    if not (dir_ / "convert_hf_to_gguf.py").exists():
+        shutil.rmtree(dir_, ignore_errors=True)
+        retry(lambda: run(["git", "clone", "--depth", "1", "--branch", ref,
+                           "https://github.com/ggml-org/llama.cpp", dir_]), what="llama.cpp klonlama", tries=4)
     # NOT: requirements-convert_hf_to_gguf.txt CPU torch kurar ve Kaggle/Colab GPU torch'unu bozar →
     # yalnızca eksik hafif bağımlılıkları kur; gguf-py betik tarafından depodan otomatik yüklenir.
-    gokturk_env.pip_install("sentencepiece", "protobuf", "numpy")
+    gokturk_env.pip_install("sentencepiece", "protobuf", "numpy<3")
     run(["cmake", "-S", dir_, "-B", dir_ / "build", "-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_CURL=OFF",
          "-DGGML_CUDA=OFF", "-DGGML_NATIVE=OFF", "-DLLAMA_BUILD_TESTS=OFF", "-DLLAMA_BUILD_EXAMPLES=OFF",
          "-DLLAMA_BUILD_SERVER=OFF"])
@@ -222,31 +228,26 @@ def push(repo_base: str | None, merged: Path | None, gguf_files: list[Path], bas
         print("⏭️  HF_TOKEN yok → yükleme atlandı.")
         return
     api = HfApi(token=token)
-    repo_base = repo_base or f"{api.whoami()['name']}/{SLUG}"
-    if merged and merged.exists():
-        api.create_repo(repo_base, private=private, exist_ok=True)
+    repo_base = repo_base or gokturk_env.hf_repo_default()
+    if merged and (merged / "config.json").exists():
+        retry(lambda: api.create_repo(repo_base, private=private, exist_ok=True), what="repo oluşturma")
         print(f"⬆️  merged 16-bit → {repo_base}")
-        api.upload_folder(folder_path=str(merged), repo_id=repo_base, commit_message="Merged 16-bit weights",
-                          ignore_patterns=["*.gguf", "_*"])
-        api.upload_file(path_or_fileobj=model_card(base, repo_base, [], "", gguf=False).encode(),
-                        path_in_repo="README.md", repo_id=repo_base)
+        (merged / "README.md").write_text(model_card(base, repo_base, [], "", gguf=False), encoding="utf-8")
+        retry(lambda: api.upload_folder(folder_path=str(merged), repo_id=repo_base,
+                                        commit_message="Merged 16-bit weights",
+                                        ignore_patterns=["*.gguf", "_*", ".cache/*"]),
+              what="merged yükleme", tries=6)
         print(f"✅ https://huggingface.co/{repo_base}")
     if gguf_files:
         repo_gguf = f"{repo_base}-GGUF"
-        api.create_repo(repo_gguf, private=private, exist_ok=True)
+        retry(lambda: api.create_repo(repo_gguf, private=private, exist_ok=True), what="GGUF repo oluşturma")
         for f in gguf_files:
-            print(f"⬆️  {f.name} → {repo_gguf}")
-            for attempt in range(3):
-                try:
-                    api.upload_file(path_or_fileobj=str(f), path_in_repo=f.name, repo_id=repo_gguf,
-                                    commit_message=f"Add {f.name}")
-                    break
-                except Exception as e:  # noqa: BLE001
-                    print(f"  deneme {attempt + 1}/3: {e}")
-                    if attempt == 2:
-                        raise
-        api.upload_file(path_or_fileobj=model_card(base, repo_base, gguf_files, table).encode(),
-                        path_in_repo="README.md", repo_id=repo_gguf)
+            print(f"⬆️  {f.name} ({f.stat().st_size / 1024**3:.2f} GB) → {repo_gguf}")
+            retry(lambda f=f: api.upload_file(path_or_fileobj=str(f), path_in_repo=f.name, repo_id=repo_gguf,
+                                              commit_message=f"Add {f.name}"), what=f"{f.name} yükleme", tries=6)
+        card = model_card(base, repo_base, gguf_files, table).encode()
+        retry(lambda: api.upload_file(path_or_fileobj=card, path_in_repo="README.md", repo_id=repo_gguf),
+              what="model kartı")
         print(f"✅ https://huggingface.co/{repo_gguf}")
 
 
@@ -254,8 +255,9 @@ def push(repo_base: str | None, merged: Path | None, gguf_files: list[Path], bas
 def main():
     out_default, scratch_default = gokturk_env.default_dirs()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--lora", type=Path, default=out_default / "gokturk-2.5b-thinking/lora_adapter")
-    ap.add_argument("--out", type=Path, default=out_default / "gokturk-2.5b-thinking")
+    ap.add_argument("--lora", type=Path, default=out_default / "gokturk/lora_adapter")
+    ap.add_argument("--lora-repo", help="LoRA'yı HF'ten indir (ör. kullanici/GokTurk2.5-3B-Thinking-LoRA)")
+    ap.add_argument("--out", type=Path, default=out_default / "gokturk")
     ap.add_argument("--scratch", type=Path, default=scratch_default)
     ap.add_argument("--base", help="16-bit taban modeli elle belirt (ör. Qwen/Qwen2.5-3B-Instruct)")
     ap.add_argument("--merge", choices=["peft", "unsloth"], default="peft")
@@ -265,12 +267,17 @@ def main():
     ap.add_argument("--llama-cpp-dir", type=Path, default=None)
     ap.add_argument("--push", action="store_true")
     ap.add_argument("--no-push-merged", dest="push_merged", action="store_false")
-    ap.add_argument("--repo", help="kullanici/GokTurk-2.5B-Thinking (boşsa HF kullanıcı adınızla)")
+    ap.add_argument("--repo", default=os.environ.get("HF_REPO"),
+                    help="kullanici/GokTurk2.5-3B-Thinking (boşsa HF kullanıcı adınızla)")
     ap.add_argument("--private", action="store_true")
     a = ap.parse_known_args()[0]
 
+    gokturk_env.setup_gpu_env()
     gokturk_env.load_secrets(("HF_TOKEN",))
-    assert (a.lora / "adapter_config.json").exists(), f"LoRA bulunamadı: {a.lora}"
+    if a.lora_repo:
+        a.lora = Path(gokturk_env.prefetch_model(a.lora_repo))
+    if not (a.lora / "adapter_config.json").exists():
+        raise SystemExit(f"❌ LoRA bulunamadı: {a.lora}\n   Önce train_unsloth.py çalıştırın veya --lora-repo verin.")
     base = a.base or resolve_base(a.lora)
     merged = a.scratch / "merged_16bit"          # büyük → scratch (Kaggle kotası dışında)
     gguf_dir = a.out / "gguf"
