@@ -66,6 +66,10 @@ python tavily_rag_handler.py "OpenSSH için son kritik CVE hangisi?" --show-thou
 Hugging Face'te oluşan depolar: `<kullanıcı>/GokTurk2.5-3B-Thinking` (merged 16-bit) · `…-GGUF` (Q4_K_M, Q8_0) · `…-LoRA`.
 
 ### Eğitim bitti, yalnızca GGUF üretmek
+**En kolay yol:** `notebooks/GokTurk_GGUF_Export.ipynb` dosyası tek başına çalışır, repoya bağımlı değildir. Kaggle'a yükleyin, Accelerator None ve Internet On seçin, `HF_TOKEN` secret'ını bağlayın, Save & Run All yapın.
+Notebook LoRA'yı indirir, 16-bit tabanla birleştirir, Q4_K_M ve Q8_0 GGUF üretir, doğrular ve yükler.
+
+Alternatif:
 LoRA hazırsa yeniden eğitmeye gerek yok. Birleştirme ve dönüştürme **CPU'da** çalışır:
 ```bash
 python push_to_hf.py --lora-repo kullanici/GokTurk2.5-3B-Thinking-LoRA --base Qwen/Qwen2.5-3B-Instruct --push
