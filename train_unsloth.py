@@ -125,6 +125,7 @@ def main():
     gokturk_env.setup_gpu_env()            # torch'tan ÖNCE
     gokturk_env.load_secrets()
     gokturk_env.ensure_unsloth()
+    gokturk_env.fix_torchao()
     ensure_data(args)
 
     # HF token'ı eğitimden ÖNCE doğrula: geçersizse eğitim yine yapılır, yalnızca yükleme atlanır

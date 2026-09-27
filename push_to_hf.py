@@ -91,6 +91,7 @@ def patch_tokenizer_config(model_dir: Path):
 
 
 def merge_peft(lora_dir: Path, out_dir: Path, base: str | None = None) -> Path:
+    gokturk_env.fix_torchao()          # peft import edilmeden ÖNCE
     import torch
     from peft import PeftModel
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -98,7 +99,7 @@ def merge_peft(lora_dir: Path, out_dir: Path, base: str | None = None) -> Path:
     print(f"🔗 PEFT merge (CPU): {base} + {lora_dir}")
     local = gokturk_env.prefetch_model(base)          # yeniden denemeli, kaldığı yerden devam eden indirme
     assert_not_quantized(Path(local), f"Taban model ({base})")
-    model = AutoModelForCausalLM.from_pretrained(local, torch_dtype=torch.float16, device_map="cpu",
+    model = AutoModelForCausalLM.from_pretrained(local, dtype=torch.float16, device_map="cpu",
                                                  low_cpu_mem_usage=True)
     model = PeftModel.from_pretrained(model, str(lora_dir)).merge_and_unload()
     out_dir.mkdir(parents=True, exist_ok=True)

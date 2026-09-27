@@ -114,6 +114,23 @@ def pip_install(*pkgs: str, constraints: bool = True):
     subprocess.check_call(cmd)
 
 
+def fix_torchao(min_version=(0, 16)):
+    """Kaggle'daki eski torchao (ör. 0.10) peft'i çökertir ('incompatible version of torchao').
+    Birleştirme/eğitim torchao kullanmadığı için uyumsuz sürüm kaldırılır."""
+    try:
+        import importlib.metadata as md
+        v = md.version("torchao")
+    except Exception:  # noqa: BLE001 — kurulu değil
+        return
+    try:
+        ok = tuple(int(x) for x in v.split("+")[0].split(".")[:2]) >= min_version
+    except ValueError:
+        ok = False
+    if not ok:
+        print(f"🔧 torchao {v} peft ile uyumsuz → kaldırılıyor (kullanılmıyor)")
+        subprocess.call([sys.executable, "-m", "pip", "uninstall", "-y", "-q", "torchao"])
+
+
 def ensure_unsloth():
     if importlib.util.find_spec("unsloth") is None:
         print("📦 unsloth kuruluyor (2-4 dk)...")
