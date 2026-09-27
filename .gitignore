@@ -3,3 +3,5 @@ data/*.jsonl
 outputs/
 __pycache__/
 *.gguf
+data/**/*.jsonl
+!data/template*.jsonl
