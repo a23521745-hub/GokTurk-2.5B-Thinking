@@ -47,10 +47,38 @@ def run(cmd, **kw):
 # ---------------------------------------------------------------------------
 # 1) MERGE
 # ---------------------------------------------------------------------------
+def to_hub_id(name: str) -> str:
+    """Yerel HF önbellek yolunu (…/models--org--ad/snapshots/…) depo kimliğine (org/ad) çevirir."""
+    m = re.search(r"models--([^/\\]+?)--([^/\\]+)", name)
+    return f"{m.group(1)}/{m.group(2)}" if m else name
+
+
+def to_16bit_base(name: str) -> str:
+    """4-bit Unsloth/bnb kopyası → aynı modelin resmî 16-bit sürümü."""
+    hub = to_hub_id(name)
+    hub = re.sub(r"(?i)-(unsloth-)?bnb-4bit$", "", hub)
+    hub = re.sub(r"(?i)-(4bit|awq|gptq)$", "", hub)
+    org, _, model = hub.partition("/")
+    if org.lower() == "unsloth" and model.lower().startswith("qwen"):
+        org = "Qwen"
+    return f"{org}/{model}" if model else hub
+
+
 def resolve_base(lora_dir: Path) -> str:
-    base = json.loads((lora_dir / "adapter_config.json").read_text())["base_model_name_or_path"]
-    # 4-bit Unsloth kopyası → aynı modelin 16-bit sürümü (merge 16-bit ağırlıkla yapılmalı)
-    return re.sub(r"-(bnb-4bit|unsloth-bnb-4bit)$", "", base).replace("unsloth/", "Qwen/")
+    """Birleştirme için 16-bit taban modeli bulur: önce train_meta.json, sonra adapter_config.json."""
+    for meta in (lora_dir.parent / "train_meta.json", lora_dir / "train_meta.json"):
+        if meta.exists():
+            base = json.loads(meta.read_text()).get("base_model")
+            if base:
+                return to_16bit_base(base)
+    return to_16bit_base(json.loads((lora_dir / "adapter_config.json").read_text())["base_model_name_or_path"])
+
+
+def assert_not_quantized(model_dir: Path, what: str):
+    cfg = json.loads((model_dir / "config.json").read_text())
+    if "quantization_config" in cfg:
+        raise SystemExit(f"❌ {what} kuantize (bitsandbytes) görünüyor: {model_dir}\n"
+                         "   llama.cpp yalnızca 16-bit ağırlıkları dönüştürebilir. --base Qwen/Qwen2.5-3B-Instruct verin.")
 
 
 def patch_tokenizer_config(model_dir: Path):
@@ -69,6 +97,7 @@ def merge_peft(lora_dir: Path, out_dir: Path, base: str | None = None) -> Path:
     base = base or resolve_base(lora_dir)
     print(f"🔗 PEFT merge (CPU): {base} + {lora_dir}")
     local = gokturk_env.prefetch_model(base)          # yeniden denemeli, kaldığı yerden devam eden indirme
+    assert_not_quantized(Path(local), f"Taban model ({base})")
     model = AutoModelForCausalLM.from_pretrained(local, torch_dtype=torch.float16, device_map="cpu",
                                                  low_cpu_mem_usage=True)
     model = PeftModel.from_pretrained(model, str(lora_dir)).merge_and_unload()
@@ -76,6 +105,7 @@ def merge_peft(lora_dir: Path, out_dir: Path, base: str | None = None) -> Path:
     model.save_pretrained(str(out_dir), safe_serialization=True, max_shard_size="2GB")
     AutoTokenizer.from_pretrained(str(lora_dir)).save_pretrained(str(out_dir))
     del model
+    assert_not_quantized(out_dir, "Birleştirilmiş model")
     return out_dir
 
 
@@ -279,11 +309,15 @@ def main():
     if not (a.lora / "adapter_config.json").exists():
         raise SystemExit(f"❌ LoRA bulunamadı: {a.lora}\n   Önce train_unsloth.py çalıştırın veya --lora-repo verin.")
     base = a.base or resolve_base(a.lora)
+    print(f"🧩 16-bit taban model: {base}")
     merged = a.scratch / "merged_16bit"          # büyük → scratch (Kaggle kotası dışında)
     gguf_dir = a.out / "gguf"
     a.scratch.mkdir(parents=True, exist_ok=True)
 
     need_merged = a.gguf_backend == "llamacpp" or (a.push and a.push_merged)
+    if (merged / "config.json").exists() and "quantization_config" in (merged / "config.json").read_text():
+        print("🧹 Önceki hatalı (4-bit) birleştirme siliniyor → 16-bit tabanla yeniden birleştirilecek")
+        shutil.rmtree(merged)
     if need_merged and not (merged / "config.json").exists():
         (merge_peft(a.lora, merged, base) if a.merge == "peft" else merge_unsloth(a.lora, merged))
     if need_merged:

@@ -157,9 +157,9 @@ def main():
     ckpt_dir = scratch / "checkpoints"
 
     # ---------------- Model + LoRA (ağ kesintisine dayanıklı) ----------------
-    local = gokturk_env.prefetch_model(base)
-    model, tokenizer = gokturk_env.retry(lambda: FastLanguageModel.from_pretrained(
-        model_name=local, max_seq_length=args.max_seq_len, dtype=None, load_in_4bit=True),
+    gokturk_env.prefetch_model(base)     # önbelleğe indir (yeniden denemeli); yüklemede DEPO ADI kullanılır ki
+    model, tokenizer = gokturk_env.retry(lambda: FastLanguageModel.from_pretrained(   # adaptöre yol değil ad yazılsın
+        model_name=base, max_seq_length=args.max_seq_len, dtype=None, load_in_4bit=True),
         what="model yükleme", tries=3)
     tokenizer.chat_template = CHAT_TEMPLATE          # GGUF'a gömülecek şablon (varsayılan sistem promptlu)
     if tokenizer.pad_token is None:
@@ -222,9 +222,15 @@ def main():
     lora_dir = out / "lora_adapter"
     model.save_pretrained(str(lora_dir))
     tokenizer.save_pretrained(str(lora_dir))
+    # adaptöre taban modelin DEPO ADINI yaz (yerel önbellek yolu başka makinede geçersizdir)
+    ac = lora_dir / "adapter_config.json"
+    acj = json.loads(ac.read_text())
+    acj["base_model_name_or_path"] = base
+    ac.write_text(json.dumps(acj, indent=2))
     meta = {"base_model": base, "lora_r": args.lora_r, "lora_alpha": args.lora_alpha, "epochs": args.epochs,
             "lr": args.lr, "train_examples": len(train_ds), "metrics": stats.metrics}
     (out / "train_meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))
+    (lora_dir / "train_meta.json").write_text(json.dumps(meta, indent=2, ensure_ascii=False))  # HF'e de gitsin
     print(f"💾 LoRA → {lora_dir}")
 
     # LoRA'yı HEMEN yükle: sonraki adımlar (merge/GGUF) başarısız olsa bile eğitim kaybolmaz

@@ -65,6 +65,13 @@ python tavily_rag_handler.py "OpenSSH için son kritik CVE hangisi?" --show-thou
 
 Hugging Face'te oluşan depolar: `<kullanıcı>/GokTurk2.5-3B-Thinking` (merged 16-bit) · `…-GGUF` (Q4_K_M, Q8_0) · `…-LoRA`.
 
+### Eğitim bitti, yalnızca GGUF üretmek
+LoRA hazırsa yeniden eğitmeye gerek yok. Birleştirme ve dönüştürme **CPU'da** çalışır:
+```bash
+python push_to_hf.py --lora-repo kullanici/GokTurk2.5-3B-Thinking-LoRA --base Qwen/Qwen2.5-3B-Instruct --push
+```
+Kaggle notebook'unda ayarlardaki `LORA_SOURCE` alanını doldurmanız yeterli; Accelerator `None` olabilir.
+
 ### Düşünce ↔ yanıt tutarlılığı
 STEP 6 her zaman `Doğrulanan sonuç: …` satırıyla biter. Nihai yanıt bu sonuçla çelişen örnekler eğitim verisinden atılır. Çıkarımda `tavily_rag_handler.py` tutarsızlık görürse düşünceyi aynen tutar ve yalnızca nihai yanıtı temperature=0 ile yeniden üretir.
 
