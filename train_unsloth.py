@@ -127,11 +127,18 @@ def main():
     gokturk_env.ensure_unsloth()
     ensure_data(args)
 
+    # HF token'ı eğitimden ÖNCE doğrula: geçersizse eğitim yine yapılır, yalnızca yükleme atlanır
     want_hf = args.push or args.push_lora
-    if want_hf and not os.environ.get("HF_TOKEN"):
-        print("⚠️  HF_TOKEN yok → eğitim yapılacak, Hugging Face yüklemesi ATLANACAK.")
-        want_hf = False
-    repo = gokturk_env.hf_repo_default() if want_hf and not args.hf_repo else args.hf_repo
+    repo = None
+    if want_hf:
+        user = gokturk_env.check_hf_token()
+        if user is None:
+            want_hf = False
+            print("⏭️  Hugging Face yüklemesi atlanacak; model /kaggle/working/outputs altına kaydedilecek.")
+        else:
+            from gokturk_cot import HF_SLUG
+            repo = args.hf_repo or f"{user}/{HF_SLUG}"
+            print(f"🎯 Hedef HF deposu: {repo}  (+ -LoRA, -GGUF)")
 
     from unsloth import FastLanguageModel, is_bfloat16_supported   # transformers'tan ÖNCE
     from unsloth.chat_templates import train_on_responses_only
@@ -222,7 +229,11 @@ def main():
 
     # LoRA'yı HEMEN yükle: sonraki adımlar (merge/GGUF) başarısız olsa bile eğitim kaybolmaz
     if want_hf:
-        push_lora(lora_dir, f"{repo}-LoRA", args.private, meta)
+        try:
+            push_lora(lora_dir, f"{repo}-LoRA", args.private, meta)
+        except Exception as e:  # noqa: BLE001 — eğitim sonucu diskte güvende; yükleme sonra tekrarlanabilir
+            print(f"⚠️  LoRA yüklenemedi ({str(e)[:200]}). Dosyalar {lora_dir} altında duruyor; "
+                  "push_to_hf.py ile tekrar deneyebilirsiniz.")
 
     # ---------------- Format + tutarlılık duman testi ----------------
     if not args.skip_smoke_test:

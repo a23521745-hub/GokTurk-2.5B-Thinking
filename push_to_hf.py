@@ -223,12 +223,12 @@ Kaynak kod: https://github.com/a23521745-hub/GokTurk-2.5B-Thinking
 def push(repo_base: str | None, merged: Path | None, gguf_files: list[Path], base: str, table: str,
          private: bool):
     from huggingface_hub import HfApi
-    token = os.environ.get("HF_TOKEN")
-    if not token:
-        print("⏭️  HF_TOKEN yok → yükleme atlandı.")
+    user = gokturk_env.check_hf_token()
+    if not user:
+        print("⏭️  Geçerli HF_TOKEN yok → yükleme atlandı. GGUF dosyaları diskte duruyor.")
         return
-    api = HfApi(token=token)
-    repo_base = repo_base or gokturk_env.hf_repo_default()
+    api = HfApi(token=os.environ["HF_TOKEN"])
+    repo_base = repo_base or f"{user}/{SLUG}"
     if merged and (merged / "config.json").exists():
         retry(lambda: api.create_repo(repo_base, private=private, exist_ok=True), what="repo oluşturma")
         print(f"⬆️  merged 16-bit → {repo_base}")

@@ -180,15 +180,42 @@ def prefetch_model(repo_id: str, allow_patterns: list[str] | None = None) -> str
                  what=f"{repo_id} indirme", tries=6)
 
 
+def check_hf_token(require_write: bool = True) -> str | None:
+    """HF_TOKEN'ı doğrular. Geçerliyse kullanıcı adını döndürür; değilse nedenini açıklar,
+    HF_TOKEN'ı ortamdan KALDIRIR (böylece eğitim durmaz, yalnızca yükleme atlanır) ve None döner."""
+    token = (os.environ.get("HF_TOKEN") or "").strip().strip('"').strip("'")
+    if not token:
+        return None
+    os.environ["HF_TOKEN"] = token
+    reason = None
+    if not token.startswith("hf_"):
+        reason = "değer 'hf_' ile başlamıyor (yanlış değer yapıştırılmış olabilir)"
+    else:
+        try:
+            from huggingface_hub import HfApi
+            info = retry(lambda: HfApi(token=token).whoami(), what="HF token doğrulama", tries=3)
+            role = (info.get("auth", {}).get("accessToken", {}) or {}).get("role", "")
+            if require_write and role == "read":
+                reason = "token yalnızca OKUMA (read) yetkili; yükleme için WRITE gerekir"
+            else:
+                print(f"✅ HF token geçerli → kullanıcı: {info['name']}" + (f" (yetki: {role})" if role else ""))
+                return info["name"]
+        except Exception as e:  # noqa: BLE001
+            reason = "Hugging Face token'ı reddetti (401)" if "401" in str(e) or "Invalid" in str(e) \
+                else f"doğrulanamadı: {str(e)[:150]}"
+    print(f"\n⚠️  HF_TOKEN GEÇERSİZ: {reason}\n"
+          "   → huggingface.co/settings/tokens → 'Create new token' → Token type: **Write** → oluşturup kopyalayın\n"
+          "   → Kaggle: Add-ons → Secrets → HF_TOKEN değerini yeni token ile değiştirin (tırnak/boşluk olmadan)\n"
+          "   Eğitim DEVAM EDECEK; yalnızca Hugging Face yüklemesi atlanacak.\n")
+    os.environ.pop("HF_TOKEN", None)
+    return None
+
+
 def hf_repo_default(suffix: str = "") -> str | None:
-    """HF_REPO ortam değişkeni veya <kullanıcı>/<GOKTURK_SLUG>."""
+    """HF_REPO ortam değişkeni veya <kullanıcı>/<HF_SLUG>. Token geçersizse None."""
     from gokturk_cot import HF_SLUG
     repo = os.environ.get("HF_REPO", "").strip()
     if repo:
         return repo + suffix
-    token = os.environ.get("HF_TOKEN")
-    if not token:
-        return None
-    from huggingface_hub import HfApi
-    user = retry(lambda: HfApi(token=token).whoami()["name"], what="HF kullanıcı sorgusu", tries=3)
-    return f"{user}/{HF_SLUG}{suffix}"
+    user = check_hf_token()
+    return f"{user}/{HF_SLUG}{suffix}" if user else None
