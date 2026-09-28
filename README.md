@@ -65,6 +65,14 @@ python tavily_rag_handler.py "OpenSSH için son kritik CVE hangisi?" --show-thou
 
 Hugging Face'te oluşan depolar: `<kullanıcı>/GokTurk2.5-3B-Thinking` (merged 16-bit) · `…-GGUF` (Q4_K_M, Q8_0) · `…-LoRA`.
 
+### GGUF'ta 6 aşama yok, model kendini "Qwen" sanıyor mu?
+28 Eylül'den önce üretilen GGUF'lara yanlışlıkla orijinal Qwen sohbet şablonu gömüldü. Bu şablon "You are Qwen, created by Alibaba Cloud" ekler. Model ağırlıkları sağlamdır; yalnızca şablonu değiştirmek yeterli, yaklaşık 1 dakika sürer:
+```bash
+pip install gguf
+python fix_gguf_template.py GokTurk2.5-3B-Thinking-Q4_K_M.gguf   # → ...-fixed.gguf
+```
+PocketPal'da **Sistem İstemi (system prompt) boş** olmalı. Şablon, eğitimdeki GökTürk sistem promptunu otomatik ekler.
+
 ### Eğitim bitti, yalnızca GGUF üretmek
 **En kolay yol:** `notebooks/GokTurk_GGUF_Export.ipynb` dosyası tek başına çalışır, repoya bağımlı değildir. Kaggle'a yükleyin, Accelerator None ve Internet On seçin, `HF_TOKEN` secret'ını bağlayın, Save & Run All yapın.
 Notebook LoRA'yı indirir, 16-bit tabanla birleştirir, Q4_K_M ve Q8_0 GGUF üretir, doğrular ve yükler.

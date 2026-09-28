@@ -155,3 +155,31 @@ class TestPipeline(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestGGUFTemplate(unittest.TestCase):
+    def test_fix_script_and_notebook_match_core_template(self):
+        import importlib.util, json
+        from pathlib import Path
+        import gokturk_cot as g
+        root = Path(__file__).resolve().parents[1]
+        spec = importlib.util.spec_from_file_location("fix", root / "fix_gguf_template.py")
+        fix = importlib.util.module_from_spec(spec); spec.loader.exec_module(fix)
+        self.assertEqual(fix.CHAT_TEMPLATE, g.GGUF_CHAT_TEMPLATE)
+        nb = json.loads((root / "notebooks/GokTurk_GGUF_Export.ipynb").read_text(encoding="utf-8"))
+        line = [l for l in nb["cells"][1]["source"].splitlines() if l.startswith("CHAT_TEMPLATE = ")][0]
+        ns = {}; exec(line, ns)
+        self.assertEqual(ns["CHAT_TEMPLATE"], g.GGUF_CHAT_TEMPLATE)
+        self.assertIn("GökTürk", g.GGUF_CHAT_TEMPLATE)
+        self.assertNotIn("Qwen", g.GGUF_CHAT_TEMPLATE)
+
+    def test_gguf_template_renders_like_training(self):
+        try:
+            import jinja2
+        except ImportError:
+            self.skipTest("jinja2 yok")
+        import gokturk_cot as g
+        t = jinja2.Environment().from_string(g.GGUF_CHAT_TEMPLATE)
+        msgs = [{"role": "user", "content": "Selam 'x' \\ y"}]
+        self.assertEqual(t.render(messages=msgs, add_generation_prompt=True),
+                         g.render_chatml([{"role": "system", "content": g.SYSTEM_PROMPT}] + msgs, True))

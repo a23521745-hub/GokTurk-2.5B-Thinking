@@ -274,6 +274,29 @@ CHAT_TEMPLATE = (
 )
 
 
+
+def _jinja_str(text: str) -> str:
+    """Metni Jinja tek tırnaklı dize değişmezine çevirir (tüm motorlarda çalışan kaçışlar)."""
+    return "'" + text.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n") + "'"
+
+
+# Uygulamalar (PocketPal/@huggingface/jinja, LM Studio, llama.cpp/minja) için SADE şablon:
+# {% raw %}, .rstrip(), tojson gibi her motorda bulunmayan özellikler yok.
+# Sistem mesajı yoksa GökTürk sistem promptu otomatik eklenir (eğitimle birebir aynı biçim).
+GGUF_CHAT_TEMPLATE = (
+    "{%- if messages[0]['role'] != 'system' -%}"
+    "{{- '<|im_start|>system\\n' + " + _jinja_str(SYSTEM_PROMPT) + " + '<|im_end|>\\n' -}}"
+    "{%- endif -%}"
+    "{%- for message in messages -%}"
+    "{%- if message['role'] == 'tool' -%}"
+    "{{- '<|im_start|>user\\n<tool_response>\\n' + message['content'] + '\\n</tool_response><|im_end|>\\n' -}}"
+    "{%- else -%}"
+    "{{- '<|im_start|>' + message['role'] + '\\n' + message['content'] + '<|im_end|>\\n' -}}"
+    "{%- endif -%}"
+    "{%- endfor -%}"
+    "{%- if add_generation_prompt -%}{{- '<|im_start|>assistant\\n' -}}{%- endif -%}"
+)
+
 # ---------------------------------------------------------------------------
 # Düşünce ↔ yanıt tutarlılığı
 # ---------------------------------------------------------------------------

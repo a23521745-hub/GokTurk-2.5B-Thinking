@@ -1,6 +1,10 @@
 """GokTurk_GGUF_Export.ipynb üreticisi.  python notebooks/make_gguf_notebook.py"""
 import json
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from gokturk_cot import GGUF_CHAT_TEMPLATE  # noqa: E402  — eğitimle birebir aynı sohbet biçimi
 
 MD = []
 CELLS = []
@@ -41,6 +45,10 @@ QUANTS      = ["Q4_K_M", "Q8_0"]                         # Q4_K_M ≈ 1.9 GB (te
 PUSH        = True                                      # HF'ye yükle
 PRIVATE     = False                                     # depo gizli mi
 SMOKE_TEST  = True                                      # GGUF ile kısa üretim testi (hata verirse sadece uyarır)
+
+# GökTürk sohbet şablonu: sistem mesajı yoksa eğitimdeki 6 aşamalı CoT sistem promptunu ekler.
+# (Qwen'in şablonu "You are Qwen..." ekler → model 6 aşamayı başlatmaz. DEĞİŞTİRMEYİN.)
+CHAT_TEMPLATE = ''' + json.dumps(GGUF_CHAT_TEMPLATE, ensure_ascii=False) + r'''
 
 # ── Yardımcılar (değiştirmeyin) ──────────────────────────────────────────────
 import os, sys, json, time, shutil, subprocess, textwrap
@@ -267,7 +275,7 @@ MERGE_PY.write_text(textwrap.dedent("""
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from peft import PeftModel
 
-    base, lora, out = map(Path, sys.argv[1:4])
+    base, lora, out, tpl = map(Path, sys.argv[1:5])
     torch.set_num_threads(max(1, torch.get_num_threads()))
     model = AutoModelForCausalLM.from_pretrained(str(base), dtype=torch.bfloat16, device_map="cpu", low_cpu_mem_usage=True)
     assert not getattr(model.config, "quantization_config", None), "taban kuantize!"
@@ -303,7 +311,9 @@ MERGE_PY.write_text(textwrap.dedent("""
 
     out.mkdir(parents=True, exist_ok=True)
     merged.save_pretrained(str(out), safe_serialization=True, max_shard_size="2GB")
-    AutoTokenizer.from_pretrained(str(base)).save_pretrained(str(out))
+    tok = AutoTokenizer.from_pretrained(str(base))
+    tok.chat_template = tpl.read_text(encoding="utf-8")   # Qwen şablonu yerine GökTürk şablonu
+    tok.save_pretrained(str(out))
     cfg = json.loads((out / "config.json").read_text())
     cfg.pop("quantization_config", None)
     (out / "config.json").write_text(json.dumps(cfg, indent=2))
@@ -318,7 +328,9 @@ if (MERGED / "config.json").exists() and list(MERGED.glob("*.safetensors")):
 else:
     shutil.rmtree(MERGED, ignore_errors=True)
     t = time.time()
-    run([sys.executable, str(MERGE_PY), str(BASE_DIR), str(FIXED_LORA), str(MERGED)])
+    TPL = WORK / "gokturk_chat_template.jinja"
+    TPL.write_text(CHAT_TEMPLATE, encoding="utf-8")
+    run([sys.executable, str(MERGE_PY), str(BASE_DIR), str(FIXED_LORA), str(MERGED), str(TPL)])
     print(f"⏱️ {time.time()-t:.0f}s")
 mcfg = json.loads((MERGED / "config.json").read_text())
 if mcfg.get("quantization_config"):
@@ -374,7 +386,7 @@ CHECK_PY.write_text(textwrap.dedent("""
     arch = field("general.architecture")
     tmpl = field("tokenizer.chat_template") or ""
     print(json.dumps({"arch": arch, "tensors": len(r.tensors), "ftype": field("general.file_type"),
-                      "chat_template": bool(tmpl), "im_start": "<|im_start|>" in tmpl}))
+                      "chat_template": bool(tmpl), "gokturk_template": "GökTürk" in tmpl and "STEP 6" in tmpl}))
 """))
 ok = True
 for g in GGUFS:
@@ -383,16 +395,19 @@ for g in GGUFS:
         raise Dur(f"{g.name} okunamadı:\n{res.stderr[-1500:]}")
     info = json.loads(res.stdout.strip().splitlines()[-1])
     print(f"   {g.name}: {info}")
-    if info["arch"] != "qwen2" or info["tensors"] < MIN_TENSORS or not info["chat_template"]:
+    if info["arch"] != "qwen2" or info["tensors"] < MIN_TENSORS or not info["gokturk_template"]:
         raise Dur(f"{g.name} doğrulamayı geçemedi: {info}")
-print("✅ GGUF başlıkları geçerli (qwen2, sohbet şablonu gömülü)")
+print("✅ GGUF başlıkları geçerli (qwen2, GökTürk 6 aşamalı sohbet şablonu gömülü)")
 
 if SMOKE_TEST and SIMPLE_BIN.exists():
-    prompt = ("<|im_start|>user\nTürkiye'nin başkenti neresidir? Kısaca yanıtla.<|im_end|>\n<|im_start|>assistant\n")
+    import jinja2   # gerçek kullanımdaki gibi: GökTürk şablonu + otomatik sistem promptu
+    prompt = jinja2.Environment().from_string(CHAT_TEMPLATE).render(
+        messages=[{"role": "user", "content": "Bir tren saatte 80 km hızla 3 saat gidiyor. Kaç km yol alır?"}],
+        add_generation_prompt=True)
     try:
-        r = subprocess.run([str(SIMPLE_BIN), "-m", str(GGUFS[0]), "-n", "48", prompt],
+        r = subprocess.run([str(SIMPLE_BIN), "-m", str(GGUFS[0]), "-n", "400", prompt],
                            capture_output=True, text=True, timeout=600)
-        txt = (r.stdout or "")[-800:]
+        txt = (r.stdout or "").split("<|im_start|>assistant")[-1][:2500]
         print(f"🧪 Üretim testi ({GGUFS[0].name}):\n{txt}")
         if r.returncode != 0:
             print("⚠️ test süreci sıfırdan farklı kodla çıktı:", (r.stderr or "")[-400:])
