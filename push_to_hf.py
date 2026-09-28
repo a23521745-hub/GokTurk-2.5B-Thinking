@@ -32,7 +32,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 import gokturk_env  # noqa: E402
-from gokturk_cot import CHAT_TEMPLATE, HF_SLUG, MODEL_NAME, SYSTEM_PROMPT  # noqa: E402
+from gokturk_cot import CHAT_TEMPLATE, GGUF_CHAT_TEMPLATE, HF_SLUG, MODEL_NAME, SYSTEM_PROMPT, HF_SLUG, MODEL_NAME, SYSTEM_PROMPT  # noqa: E402
 from gokturk_env import retry  # noqa: E402
 
 SLUG = HF_SLUG
