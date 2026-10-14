@@ -1,0 +1,101 @@
+# GökTürk-3.3B-Thinking teacher/data pipeline.
+# Key values are never stored here: provider keys are resolved from environment variables.
+# Gemini 1.5 Pro was shut down in the public Gemini API in 2025. The live default below is
+# replaceable with GEMINI_MODEL; pin/verify model ids in the provider console before a run.
+schema_version: 1
+
+security:
+  # External teacher providers receive the question text. The CLI still requires the explicit
+  # --allow-external-teachers acknowledgement before sending any prompts to them.
+  external_data_policy: explicit_opt_in
+  reject_env_file_permissions: true
+
+providers:
+  gemini:
+    enabled: true
+    external: true
+    api_key_env: GEMINI_API_KEY
+    base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+    base_url_env: GEMINI_BASE_URL
+    default_model: gemini-3.8-flash
+    model_env: GEMINI_MODEL
+    legacy_requested_model: gemini-1.5-pro
+    json_mode: true
+    timeout_seconds: 90
+    max_retries: 3
+
+  deepseek:
+    enabled: true
+    external: true
+    api_key_env: DEEPSEEK_API_KEY
+    base_url: https://api.deepseek.com
+    base_url_env: DEEPSEEK_BASE_URL
+    default_model: deepseek-v4-pro
+    model_env: DEEPSEEK_MODEL
+    json_mode: true
+    timeout_seconds: 120
+    max_retries: 3
+
+  qwen:
+    enabled: true
+    external: true
+    api_key_env:
+      - QWEN_API_KEY
+      - DASHSCOPE_API_KEY
+    # Alibaba Model Studio keys and compatible URLs are region-specific. Set QWEN_BASE_URL
+    # to the exact OpenAI-compatible URL shown in the console (including /compatible-mode/v1).
+    base_url: ""
+    base_url_env: QWEN_BASE_URL
+    default_model: qwen3.8-max
+    model_env: QWEN_MODEL
+    json_mode: true
+    timeout_seconds: 120
+    max_retries: 3
+
+  # Optional in-country teachers. EVREN's public documentation confirms OpenAI-compatible chat,
+  # but the authenticated API base URL and model IDs should be copied from the user's portal.
+  # Use two distinct, explicitly selected EVREN model IDs to keep independent-teacher quorum.
+  evren_deepseek:
+    enabled: false
+    external: false
+    api_key_env:
+      - EVREN_LLM_API_KEY
+      - EVREN_API_KEY
+    base_url: ""
+    base_url_env: EVREN_BASE_URL
+    default_model: ""
+    model_env: EVREN_DEEPSEEK_MODEL
+    json_mode: true
+    timeout_seconds: 120
+    max_retries: 3
+
+  evren_qwen:
+    enabled: false
+    external: false
+    api_key_env:
+      - EVREN_LLM_API_KEY
+      - EVREN_API_KEY
+    base_url: ""
+    base_url_env: EVREN_BASE_URL
+    default_model: ""
+    model_env: EVREN_QWEN_MODEL
+    json_mode: true
+    timeout_seconds: 120
+    max_retries: 3
+
+generation:
+  temperature: 0.15
+  max_output_tokens: 900
+  timeout_seconds: 90
+  max_retries: 3
+  samples_per_provider: 1
+  max_workers: 6
+  min_confidence: 0.55
+  min_distinct_teachers: 2
+  min_consensus: 2
+  require_reference_for_math: true
+
+paths:
+  question_bank: data/questions.sample.jsonl
+  accepted: data/gokturk33b_teacher.accepted.jsonl
+  rejected: data/gokturk33b_teacher.rejected.jsonl

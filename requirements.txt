@@ -2,7 +2,9 @@
 #   pip install -r requirements.txt -c constraints.txt
 datasets>=3.4.1,<4.4.0      # prepare_dataset.py seeds
 huggingface_hub>=0.34.0,<1.0
-openai>=1.40                # prepare_dataset.py distill (Gemini/OpenAI uyumlu öğretmen)
+openai>=1.40                # OpenAI uyumlu Gemini/DeepSeek/Qwen/EVREN öğretmen API'leri
+PyYAML>=6.0.2,<7             # modüler pipeline YAML yapılandırmaları
+python-dotenv>=1.0,<2        # yalnızca açıkça seçilen, izinleri kısıtlı .env dosyası için
 jinja2>=3.1                 # sohbet şablonu testi
 # İsteğe bağlı:
 # llama-cpp-python          # tavily_rag_handler.py --gguf (sunucusuz çıkarım)

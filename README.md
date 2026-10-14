@@ -36,7 +36,8 @@ Araç çağrısı Qwen2.5'in yerel `<tool_call>` biçimidir. Biçimin tek kayna�
 | `push_to_hf.py` | LoRA → merged 16-bit (CPU) → GGUF Q4_K_M/Q8_0 (llama.cpp) → RAM tablosu → Hugging Face |
 | `tavily_rag_handler.py` | Tavily istemcisi, sonuç temizleme ve süzme, ajan döngüsü, CLI |
 | `gokturk_env.py` | Kaggle/Colab secrets, GPU kontrolü, sürüm kilitli kurulum, yeniden deneme (retry/backoff) |
-| `requirements-train.txt` + `constraints.txt` | Eğitim bağımlılıkları; `datasets<4.4.0` (unsloth-zoo), `huggingface_hub<1.0` kilitli |
+| `requirements-train.txt` + `constraints.txt` | Mevcut Unsloth/Kaggle eğitim bağımlılıkları; `datasets<4.4.0`, `huggingface_hub<1.0` kilitli |
+| `requirements-h200.txt` | Yeni native Transformers/PEFT H200 akışı; PyTorch/CUDA EVREN uyumlu imajdan sağlanır |
 | `requirements.txt` | Veri hazırlama / RAG istemcisi (GPU gerekmez) |
 | `notebooks/GokTurk6_Kaggle_T4.ipynb` | Kaggle'da uçtan uca çalışan notebook |
 
@@ -98,3 +99,21 @@ GGUF'a GökTürk sohbet şablonu gömülüdür. Sistem promptu boş bırakılır
 - `.github/workflows/build-gguf.yml`: Hugging Face'teki merged modelden CI ile GGUF üretir ve GitHub Release'e yükler.
 - `inference/search_executor.py` (DuckDuckGo/SearXNG yedeği) ve `scripts/` (sentetik üreticiler) önceki sürümden kalma yardımcılardır.
 - Testler: `python -m unittest discover tests`
+
+---
+
+## GökTürk-3.3B: Teacher–Student Distillation (H200 → Mobile GGUF)
+
+Yeni, bağımsız üretim hattı `gokturk_distill/` ve `scripts/` altında bulunur; mevcut GökTürk-2.5B/3B eğitim biçimini değiştirmez. Soru bankası → Gemini/DeepSeek/Qwen ensemble → yerel schema/referans verifier → H200 BF16 QLoRA/SFT → adapter merge → F16 GGUF → Q4_K_M.
+
+```bash
+cp .env.example .env && chmod 600 .env
+# .env içine kendi anahtarlarını yaz; yalnızca izin verilen açık/sanitize edilmiş sorularla:
+python scripts/generate_teacher_data.py --input data/questions.jsonl --env-file .env \
+  --accepted data/teacher.accepted.jsonl --rejected data/teacher.rejected.jsonl \
+  --allow-external-teachers
+python scripts/verify_teacher_data.py --input data/teacher.accepted.jsonl \
+  --accepted data/verified.accepted.jsonl --rejected data/verified.rejected.jsonl
+```
+
+Üretim/hardware akışı, `Gemini 1.5 Pro` model yaşam döngüsü uyarısı, EVREN Slurm/Apptainer ayarları, JSONL sözleşmesi, verifier sınırları ve telefon bellek hesabı için [`docs/distillation_evren.md`](docs/distillation_evren.md) dosyasına bakın. `configs/train_h200.yaml` içindeki r=64, alpha=128, max_seq_len=4096 ve BF16 örnek config'tir. Yeni native H200 akışının paket listesi `requirements-h200.txt` içindedir; EVREN'in uyumlu PyTorch/CUDA runtime'ı dışarıdan sağlanmalı ve kurulmadan önce mevcut runtime ile resolver kontrol edilmelidir. **Bu repo varsayılan olarak Qwen2.5-3B tabanını kullanır; isimdeki 3.3B parametre sayısı değildir. Gerçek 3.3B base varsa `STUDENT_BASE_MODEL` değerini o ağırlığa göre değiştirin.**

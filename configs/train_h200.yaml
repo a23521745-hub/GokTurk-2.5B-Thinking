@@ -1,0 +1,65 @@
+# Example H200 QLoRA/SFT configuration.
+# IMPORTANT: this repository currently uses a Qwen2.5-3B starter checkpoint (3B class),
+# not a verified 3.3B base. Set STUDENT_BASE_MODEL to the licensed, accessible checkpoint
+# whose architecture/parameter count you actually intend to release as GökTürk-3.3B.
+model:
+  artifact_name: GokTurk-3.3B-Thinking
+  base_model_id: ${STUDENT_BASE_MODEL:-Qwen/Qwen2.5-3B-Instruct}
+  trust_remote_code: false
+  attn_implementation: sdpa
+  require_h200: true
+
+quantization:
+  load_in_4bit: true
+  quant_type: nf4
+  double_quant: true
+  compute_dtype: bfloat16
+
+lora:
+  r: 64
+  alpha: 128
+  dropout: 0.05
+  bias: none
+  use_rslora: false
+  target_modules:
+    - q_proj
+    - k_proj
+    - v_proj
+    - o_proj
+    - gate_proj
+    - up_proj
+    - down_proj
+
+data:
+  train_jsonl: data/gokturk33b_teacher.accepted.jsonl
+  validation_jsonl: ""
+  validation_fraction: 0.02
+  max_seq_len: 4096
+  min_train_examples: 20
+  min_confidence: 0.55
+  require_reference_for_math: true
+
+training:
+  output_dir: outputs/gokturk-3.3b-h200
+  num_train_epochs: 2.0
+  max_steps: -1
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 16
+  learning_rate: 0.0001
+  lr_scheduler_type: cosine
+  warmup_ratio: 0.03
+  weight_decay: 0.01
+  max_grad_norm: 1.0
+  logging_steps: 10
+  save_strategy: steps
+  save_steps: 100
+  save_total_limit: 3
+  eval_steps: 100
+  dataloader_num_workers: 4
+  gradient_checkpointing: true
+  optim: adamw_torch_fused
+  seed: 3407
+  bf16: true
+  report_to: none
+  resume_from_checkpoint: ""
