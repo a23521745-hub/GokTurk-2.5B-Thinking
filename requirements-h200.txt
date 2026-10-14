@@ -1,0 +1,12 @@
+# Native Transformers/PEFT dependencies for scripts/train_qlora_h200.py and merge_lora.py.
+# PyTorch/CUDA are intentionally supplied by the EVREN H200 image/module; see docs before installing.
+accelerate==1.15.0
+bitsandbytes==0.50.2
+huggingface_hub==0.36.2
+jinja2>=3.1,<4
+peft==0.21.0
+protobuf>=5,<8
+PyYAML>=6.0.2,<7
+safetensors>=0.4.3
+sentencepiece>=0.2,<0.3
+transformers==4.57.6

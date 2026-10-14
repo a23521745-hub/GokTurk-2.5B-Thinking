@@ -1,0 +1,21 @@
+# GGUF export configuration for llama.cpp. Pin LLAMA_CPP_REF to a reviewed tag/commit
+# for reproducible builds; if LLAMA_CPP_DIR points to an existing checkout, its exact SHA
+# is recorded in the output manifest.
+model_name: GokTurk-3.3B-Thinking
+output_type: f16
+quantization: Q4_K_M
+llama_cpp_dir: ${LLAMA_CPP_DIR:-}
+llama_cpp_ref: ${LLAMA_CPP_REF:-}
+build_jobs: 8
+build_if_missing: true
+smoke_test: true
+keep_f16: false
+
+mobile:
+  context_size: 4096
+  kv_cache_type: q8_0
+  free_ram_gb: 3.6
+  runtime_reserve_gb: 0.45
+  target_file_size_gb_min: 1.8
+  target_file_size_gb_max: 1.95
+  strict_target_size: false

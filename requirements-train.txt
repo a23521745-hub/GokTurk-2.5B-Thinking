@@ -4,10 +4,12 @@ unsloth
 unsloth_zoo
 datasets>=3.4.1,<4.4.0
 huggingface_hub>=0.34.0,<1.0
+transformers
 peft
 trl
 bitsandbytes
 accelerate
 sentencepiece
 protobuf
+PyYAML>=6.0.2,<7
 jinja2

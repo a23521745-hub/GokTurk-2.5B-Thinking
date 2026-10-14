@@ -5,3 +5,9 @@ __pycache__/
 *.gguf
 data/**/*.jsonl
 !data/template*.jsonl
+!data/questions.sample.jsonl
+
+# Local credentials / environment files
+.env
+.env.*
+!.env.example
